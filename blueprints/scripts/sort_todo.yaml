@@ -1,0 +1,178 @@
+blueprint:
+  name: 'Sort Todo'
+  description: |
+    Reorder entries in a todo list.
+    **This is a destructive sort; it deletes all items and re-populates them as accurately as possible,
+    but parameters for external lists not supported by the todo integration will be lost.**
+    If the list is already sorted how it needs to be, no items are changed.
+
+    It is also possible for lists synced from external services to get out of sync;
+    if the list is changed externally, and Home Assistant sorts the list before it syncs the external changes,
+    the list contents can get de-synced.
+    The blueprint calls 'home_assistant.update_entity' firat to help mitigate this,
+    but issues can still arise, which can result in any of the following:
+    - restoring closed items
+    - failing to sort newly created items
+    - duplicating any/all list items (since sorting them requires deleting them, and some external lists use uuid's, the conflict between two separate changes causes them results to be combined)
+
+    This is a workaround until a built-in capability is introduced.
+    https://community.home-assistant.io/t/sort-todo-lists/715813
+
+    The blueprint is instantiated one per todo list, and is queued to prevent race conditions.
+    The sort criteria can be different for each run.
+  domain: script
+  homeassistant:
+    min_version: 2024.1.0
+  input:
+    input_todo_entity:
+      selector:
+        entity:
+          domain:
+          - todo
+          multiple: false
+      name: Todo Entity
+      description: 'Entity to sort. Sorting is done by capturing all todo entries in a
+        variable, determining the sorted order, iteratively removing items from the todo based
+        on their summary/title, and adding them back in sorted order.'
+sequence:
+  - variables:
+      todo_entity: !input input_todo_entity
+      remove_completed_items: '{{ field_remove_completed_items | default(False) }}'
+  - service: homeassistant.update_entity
+    target:
+      entity_id: '{{ todo_entity }}'
+    data: {}
+  - delay:
+      hours: 0
+      minutes: 0
+      seconds: 2
+  - if:
+    - condition: template
+      value_template: "{{ remove_completed_items }}"
+    then:
+    - service: todo.remove_completed_items
+      target:
+        entity_id: '{{ todo_entity }}'
+      data: {}
+  - service: todo.get_items
+    metadata: {}
+    data:
+      status: needs_action
+    response_variable: get_list_response
+    target:
+      entity_id: '{{ todo_entity }}'
+  - variables:
+      sort_by: '{{ field_sort_by | default("Due Date")}}'
+      sort_order_descending: '{{ field_sort_order_descending | default(False) }}'
+      remove_duplicates: '{{ field_remove_duplicates | default(False) }}'
+      raw_items: '{{ get_list_response[todo_entity]["items"] }}'
+      items_to_sort: |
+        {% if remove_duplicates %}
+          {% set deduplicated_items = namespace(seen_item_ids=dict(), final_list=[]) %}
+          {% for raw_item in raw_items %}
+            {% set item_id = (raw_item["summary"], raw_item["due"] | default(None)) | string %}
+            {% if item_id not in deduplicated_items.seen_item_ids %}
+              {% set deduplicated_items.final_list = deduplicated_items.final_list + [raw_item] %}
+              {% set deduplicated_items.seen_item_ids = dict({item_id: raw_item}, **deduplicated_items.seen_item_ids) %}
+            {% endif %}
+          {% endfor %}
+          {{ deduplicated_items.final_list }}
+        {% else %}
+          {{ raw_items }}
+        {% endif %}
+      sorted_items_with_due: '{{ (items_to_sort | selectattr("due", "defined") | sort(reverse=sort_order_descending, attribute="due") | list) }}'
+      sorted_items_without_due: '{{ items_to_sort | selectattr("due", "undefined") | list }}'
+      sorted_items: |
+        {# Sort ascending first, then flip if required. #}
+        {% if sort_by == "Due Date" %}
+          {{ sorted_items_with_due + sorted_items_without_due }}
+        {% elif sort_by == "Summary" %}
+          {{ items_to_sort | sort(reverse=sort_order_descending, attribute='summary') }}
+        {% else %}
+          {{ items_to_sort }}
+        {% endif %}
+  - condition: template
+    value_template: "{{ sorted_items != raw_items }}"
+  - repeat:
+      sequence:
+      - service: todo.remove_item
+        metadata: {}
+        data:
+          item: '{{ repeat.item.summary }}'
+        target:
+          entity_id: '{{ todo_entity }}'
+      for_each: '{{ raw_items }}'
+    enabled: true
+  - service: todo.get_items
+    metadata: {}
+    data:
+      status: needs_action
+    response_variable: list_after_removals
+    target:
+      entity_id: '{{ todo_entity }}'
+    enabled: true
+  - repeat:
+      sequence:
+      - service: todo.add_item
+        metadata: {}
+        data: |
+          {% set ns = namespace(result={"item": repeat.item.summary, "description": (repeat.item.description | default(None))}) %}
+          {% if "due" in repeat.item %}
+            {% if "T" in repeat.item.due %}
+              {% set ns.result = dict({"due_datetime": repeat.item.due}, **ns.result) %}
+            {% else %}
+              {% set ns.result = dict({"due_date": repeat.item.due}, **ns.result) %}
+            {% endif %}
+          {% endif %}
+          {{ ns.result }}
+        target:
+          entity_id: '{{ todo_entity }}'
+      for_each: '{{ sorted_items }}'
+    enabled: true
+  - service: todo.get_items
+    metadata: {}
+    data:
+      status: needs_action
+    response_variable: list_after_adds
+    target:
+      entity_id: '{{ todo_entity }}'
+    enabled: true
+fields:
+  field_sort_by:
+    selector:
+      select:
+        options:
+        - Due Date
+        - Summary
+    name: Sort By
+    default: Due Date
+    required: false
+    description: When sorting by "Due Date", items without a due date set will always
+      be at the bottom of the list. Ties for any two sorting criteria (including
+      absent due date) will retain original order.
+  field_sort_order_descending:
+    selector:
+      boolean: {}
+    name: Sort Order Descending
+    required: false
+    default: false
+    description: Defaults to ascending (lowest first). When this parameter is true,
+      order flips.
+  field_remove_duplicates:
+    selector:
+      boolean: {}
+    name: Remove Duplicates
+    required: false
+    default: false
+    description: Remove items with redundant summary/title and due date.
+      Recommended to be 'true' when possible, especially when syncing a
+      list from an external service that can be modified separately.
+  field_remove_completed_items:
+    selector:
+      boolean: {}
+    name: Remove Completed Items
+    required: false
+    default: false
+    description: Remove completed items before sorting. Just for convenience. Completed items do not impact sorting.
+mode: queued
+icon: mdi:sort
