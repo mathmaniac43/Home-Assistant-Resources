@@ -80,7 +80,18 @@ sequence:
         {% else %}
           {{ raw_items }}
         {% endif %}
-      sorted_items_with_due: '{{ (items_to_sort | selectattr("due", "defined") | sort(reverse=sort_order_descending, attribute="due") | list) }}'
+      sorted_items_with_due: |
+        {% set items_with_due = items_to_sort | selectattr("due", "defined") | list %}
+        {% set adjusted_items_with_due = namespace(items=[]) %}
+        {% for item in items_with_due %}
+          {% if "T" in item.due %}
+            {% set adjusted_items_with_due.items = adjusted_items_with_due.items + [dict({"sort_due": item.due}, **item)] %}
+          {% else %}
+            {# Add a "U" since it comes after "T"! #}
+            {% set adjusted_items_with_due.items = adjusted_items_with_due.items + [dict({"sort_due": item.due + "U"}, **item)] %}
+          {% endif %}
+        {% endfor %}
+        {{ adjusted_items_with_due.items | sort(reverse=sort_order_descending, attribute="sort_due") | list }}
       sorted_items_without_due: '{{ items_to_sort | selectattr("due", "undefined") | list }}'
       sorted_items: |
         {# Sort ascending first, then flip if required. #}
@@ -91,8 +102,10 @@ sequence:
         {% else %}
           {{ items_to_sort }}
         {% endif %}
+      raw_due_dates: '{{ raw_items | selectattr("due", "defined") | map(attribute="due") | list }}'
+      sorted_due_dates: '{{ sorted_items | selectattr("due", "defined") | map(attribute="due") | list }}'
   - condition: template
-    value_template: "{{ sorted_items != raw_items }}"
+    value_template: '{{ sorted_due_dates != raw_due_dates }}'
   - repeat:
       sequence:
       - service: todo.remove_item
