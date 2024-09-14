@@ -107,56 +107,57 @@ sequence:
       sorted_summaries: '{{ sorted_items | map(attribute="summary") | list }}'
   - if:
     - condition: template
-      value_template: '{{ raw_summaries == sorted_summaries }}'
+      value_template: '{{ raw_summaries != sorted_summaries }}'
     then:
-    - stop: "Already sorted"
-      response_variable: raw_list_response
-  - repeat:
-      sequence:
-      - service: todo.remove_item
-        metadata: {}
-        data:
-          item: '{{ repeat.item.summary }}'
-        target:
-          entity_id: '{{ todo_entity }}'
-      for_each: '{{ raw_items }}'
-    enabled: true
-  - service: todo.get_items
-    metadata: {}
-    data:
-      status: needs_action
-    response_variable: list_after_removals
-    target:
-      entity_id: '{{ todo_entity }}'
-    enabled: true
-  - repeat:
-      sequence:
-      - service: todo.add_item
-        metadata: {}
-        data: |
-          {% set ns = namespace(result={"item": repeat.item.summary, "description": (repeat.item.description | default(None))}) %}
-          {% if "due" in repeat.item %}
-            {% if "T" in repeat.item.due %}
-              {% set ns.result = dict({"due_datetime": repeat.item.due}, **ns.result) %}
-            {% else %}
-              {% set ns.result = dict({"due_date": repeat.item.due}, **ns.result) %}
+    - repeat:
+        sequence:
+        - service: todo.remove_item
+          metadata: {}
+          data:
+            item: '{{ repeat.item.summary }}'
+          target:
+            entity_id: '{{ todo_entity }}'
+        for_each: '{{ raw_items }}'
+      enabled: true
+    - service: todo.get_items
+      metadata: {}
+      data:
+        status: needs_action
+      response_variable: list_after_removals
+      target:
+        entity_id: '{{ todo_entity }}'
+      enabled: true
+    - repeat:
+        sequence:
+        - service: todo.add_item
+          metadata: {}
+          data: |
+            {% set ns = namespace(result={"item": repeat.item.summary, "description": (repeat.item.description | default(None))}) %}
+            {% if "due" in repeat.item %}
+              {% if "T" in repeat.item.due %}
+                {% set ns.result = dict({"due_datetime": repeat.item.due}, **ns.result) %}
+              {% else %}
+                {% set ns.result = dict({"due_date": repeat.item.due}, **ns.result) %}
+              {% endif %}
             {% endif %}
-          {% endif %}
-          {{ ns.result }}
-        target:
-          entity_id: '{{ todo_entity }}'
-      for_each: '{{ sorted_items }}'
-    enabled: true
-  - service: todo.get_items
-    metadata: {}
-    data:
-      status: needs_action
-    response_variable: sorted_list_response
-    target:
-      entity_id: '{{ todo_entity }}'
-    enabled: true
+            {{ ns.result }}
+          target:
+            entity_id: '{{ todo_entity }}'
+        for_each: '{{ sorted_items }}'
+      enabled: true
+    - service: todo.get_items
+      metadata: {}
+      data:
+        status: needs_action
+      response_variable: raw_list_response
+      target:
+        entity_id: '{{ todo_entity }}'
+      enabled: true
+  # It appears that scripts cannot provide a response variable from within a conditional statement,
+  # so this must be last and must use the same variable for either already-sorted or just-sorted cases.
+  # https://community.home-assistant.io/t/script-service-response-returns-empty-variable/629201
   - stop: "Sorting complete"
-    response_variable: sorted_list_response
+    response_variable: raw_list_response
 fields:
   field_sort_by:
     selector:
