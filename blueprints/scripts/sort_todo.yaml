@@ -20,6 +20,8 @@ blueprint:
 
     The blueprint is instantiated one per todo list, and is queued to prevent race conditions.
     The sort criteria can be different for each run.
+
+    The response variable will contain the response from todo.get_items after the list is sorted.
   domain: script
   homeassistant:
     min_version: 2024.1.0
@@ -58,14 +60,14 @@ sequence:
     metadata: {}
     data:
       status: needs_action
-    response_variable: get_list_response
+    response_variable: raw_list_response
     target:
       entity_id: '{{ todo_entity }}'
   - variables:
       sort_by: '{{ field_sort_by | default("Due Date")}}'
       sort_order_descending: '{{ field_sort_order_descending | default(False) }}'
       remove_duplicates: '{{ field_remove_duplicates | default(False) }}'
-      raw_items: '{{ get_list_response[todo_entity]["items"] }}'
+      raw_items: '{{ raw_list_response[todo_entity]["items"] }}'
       items_to_sort: |
         {% if remove_duplicates %}
           {% set deduplicated_items = namespace(seen_item_ids=dict(), final_list=[]) %}
@@ -103,8 +105,12 @@ sequence:
         {% endif %}
       raw_summaries: '{{ raw_items | map(attribute="summary") | list }}'
       sorted_summaries: '{{ sorted_items | map(attribute="summary") | list }}'
-  - condition: template
-    value_template: '{{ raw_summaries != sorted_summaries }}'
+  - if:
+    - condition: template
+      value_template: '{{ raw_summaries == sorted_summaries }}'
+    then:
+    - stop: "Already sorted"
+      response_variable: raw_list_response
   - repeat:
       sequence:
       - service: todo.remove_item
@@ -145,10 +151,12 @@ sequence:
     metadata: {}
     data:
       status: needs_action
-    response_variable: list_after_adds
+    response_variable: sorted_list_response
     target:
       entity_id: '{{ todo_entity }}'
     enabled: true
+  - stop: "Sorting complete"
+    response_variable: sorted_list_response
 fields:
   field_sort_by:
     selector:

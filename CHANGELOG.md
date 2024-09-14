@@ -1,5 +1,9 @@
 # Home Assistant Resources Changelog
 
+# v0.1.3
+
+- Add service response containing the `todo.get_items` response of the sorted list
+
 # v0.1.2
 
 - Ensure that tasks without due dates or times are always sorted to the end of the list
